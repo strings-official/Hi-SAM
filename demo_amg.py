@@ -100,8 +100,12 @@ def unclip(p, unclip_ratio=2.0):
     distance = poly.area * unclip_ratio / poly.length
     offset = pyclipper.PyclipperOffset()
     offset.AddPath(p, pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
-    expanded = np.array(offset.Execute(distance))
-    return expanded
+    result = offset.Execute(distance)
+    try:
+        expanded = np.array(result)
+        return expanded
+    except:
+        return np.array([])
 
 
 if __name__ == '__main__':
@@ -131,6 +135,13 @@ if __name__ == '__main__':
         args.input = glob.glob(os.path.expanduser(args.input[0]))
         assert args.input, "The input path(s) was not found"
     for path in tqdm(args.input, disable=not args.output):
+        # check if the path is already processed
+        if args.eval:
+            img_id = os.path.basename(path).split('.')[0]
+            if os.path.exists(os.path.join(args.eval_out_file, img_id+'.jsonl')):
+                print(f"Skipping {path}")
+                continue
+
         img_id = os.path.basename(path).split('.')[0]
         if os.path.isdir(args.output):
             assert os.path.isdir(args.output), args.output
@@ -161,19 +172,16 @@ if __name__ == '__main__':
 
         if args.eval:
             if masks is None:
-                lines = [{'words': [{'text': '', 'vertices': [[0,0],[1,0],[1,1],[0,1]]}], 'text': ''}]
-                paragraphs = [{'lines': lines}]
+                words = [{'vertices': []}]
                 result = {
                     'image_id': img_id,
-                    "paragraphs": paragraphs
+                    'words': words
                 }
                 none_num += 1
             else:
                 masks = (masks[:, 0, :, :]).astype(np.uint8)  # word masks, (n, h, w)
-                lines = []
-                line_indices = []
+                words = []
                 for index, mask in enumerate(masks):
-                    line = {'words': [], 'text': ''}
                     contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
                     for cont in contours:
                         epsilon = 0.002 * cv2.arcLength(cont, True)
@@ -190,30 +198,17 @@ if __name__ == '__main__':
                         pts[:, 0] = np.clip(pts[:, 0], 0, img_w)
                         pts[:, 1] = np.clip(pts[:, 1], 0, img_h)
                         cnt_list = pts.tolist()
-                        line['words'].append({'text': '', 'vertices': cnt_list})
-                    if line['words']:
-                        lines.append(line)
-                        line_indices.append(index)
+                        words.append({'vertices': cnt_list})
 
-                line_grouping = utilities.DisjointSet(len(line_indices))
-                affinity = affinity[line_indices][:, line_indices]
-                for i1, i2 in zip(*np.where(affinity > args.layout_thresh)):
-                    line_grouping.union(i1, i2)
-                line_groups = line_grouping.to_group()
-                paragraphs = []
-                for line_group in line_groups:
-                    paragraph = {'lines': []}
-                    for id_ in line_group:
-                        paragraph['lines'].append(lines[id_])
-                    if paragraph:
-                        paragraphs.append(paragraph)
                 result = {
                     'image_id': img_id,
-                    "paragraphs": paragraphs
+                    'words': words
                 }
+
             with open(os.path.join(args.eval_out_file, img_id+'.jsonl'), 'w', encoding='utf-8') as fw:
                 json.dump(result, fw)
             fw.close()
-
+  
     if args.eval:
         print(f'{none_num} images without predictions.')
+
